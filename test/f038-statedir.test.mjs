@@ -62,8 +62,12 @@ function box() {
     // Everything under the home default, or [] when it was never created —
     // "nothing leaked" has to be a literal read, not an inference.
     homeLeak: () => (existsSync(path.join(home, ".hive402")) ? readdirSync(path.join(home, ".hive402")).sort() : []),
-    write(name, config) {
-      const file = path.join(project, name);
+    // `dir` defaults to the project directory. It is a parameter because the
+    // question "does this config live in the home hive directory or somewhere
+    // else" turned out to be load-bearing (F-040) and was not askable here.
+    write(name, config, dir = project) {
+      const file = path.join(dir, name);
+      mkdirSync(path.dirname(file), { recursive: true });
       writeFileSync(file, typeof config === "string" ? config : JSON.stringify(config, null, 2), "utf8");
       return file;
     },
@@ -137,13 +141,40 @@ test("with no config anywhere, the home default is still the answer", () => {
   assert.equal(resolved.file, null);
 });
 
-test("a config that declares no stateDir gets the home default, which is its own", () => {
-  // Barry's production config is exactly this shape — `stateDir: null` — which
-  // is why every silent fallback on that machine aimed at his directory.
+// CORRECTED at F-040 (cycle 25). What stood here was a single test —
+// "a config that declares no stateDir gets the home default, which is its own" —
+// which asserted the exact behaviour the Red Team later filed as a P1, and was
+// GREEN through two cycles. Its comment named Barry's production config, where
+// the claim IS true, because his config lives IN `~/.hive402`. Its body wrote
+// the config into the project directory instead, silently dropping the one
+// condition that made "which is its own" true. The comment and the body
+// described different scenarios and only the comment was right.
+//
+// Split into the two scenarios it was conflating. Neither assertion is
+// re-pointed: the first is the case the old comment described, unchanged, and
+// the second is the case its body actually built.
+
+test("a config IN the home hive directory gets the home default, which really is its own", () => {
+  // Barry's production shape: `~/.hive402/config.json`, no `stateDir` key, and
+  // his state directly in `~/.hive402/`. `dirname` of that config IS that
+  // directory, so this answer is identical before and after F-040's fix and his
+  // node needs no migration.
+  const b = box();
+  const file = b.write("config.json", LAUNCHABLE(undefined), b.homeDefault);
+  const resolved = resolveStateDir(file, { home: b.home });
+  assert.equal(resolved.stateDir, b.homeDefault);
+  assert.equal(resolved.reason, "parsed");
+});
+
+test("a config anywhere else that declares no stateDir gets ITS own directory", () => {
+  // The case the old body built and the old assertion got wrong. `~/.hive402`
+  // is the FIRST hive's directory; handing it to a config that lives elsewhere
+  // is how a throwaway node came to read Barry's pid file and refuse to start.
   const b = box();
   const file = b.write("hive402.config.json", LAUNCHABLE(undefined));
   const resolved = resolveStateDir(file, { home: b.home });
-  assert.equal(resolved.stateDir, b.homeDefault);
+  assert.equal(resolved.stateDir, b.project);
+  assert.notEqual(resolved.stateDir, b.homeDefault);
   assert.equal(resolved.reason, "parsed");
 });
 
@@ -272,22 +303,59 @@ function sourceFiles(dir, out = []) {
   return out;
 }
 
-test("the home-default state directory is built in exactly one place", () => {
+// BROADENED at F-040 (cycle 25). The original matched `path.join(...)` calls
+// containing `homedir()`, which is one spelling of one question. It could not
+// see `pathJoin(home, ".hive402", …)` where `home` came from
+// `process.env.USERPROFILE` — the spelling the credential store actually uses —
+// so "exactly one place" was only ever checked against half the ways to write
+// it. The rule is now about the DESTINATION rather than how the home directory
+// was spelled: any path built from a literal `.hive402` segment is a hive
+// directory being named from outside the seam.
+//
+// The allowlist is explicit, with a reason per entry, rather than a bare skip.
+// A silent `continue` is indistinguishable from an oversight the next time
+// somebody reads this.
+const HIVE_PATH_ALLOWED = {
+  "src/config/load.mjs":
+    "the seam itself — `homeStateDir` and `stateDirFrom` are where this decision is made (DD-72, DD-73)",
+  "src/credentials/keychain.mjs":
+    "the credential store is machine-scoped BY DESIGN and keyed per node inside it (AC-72, DD-73): " +
+    "one OS-keychain stand-in per user, not one per hive, and moving it would strand every key already stored",
+};
+
+test("a hive directory is never built from a literal path outside the seam", () => {
   const offenders = [];
   for (const file of [...sourceFiles(path.join(root, "src")), ...sourceFiles(path.join(root, "bin"))]) {
     const rel = path.relative(root, file).split(path.sep).join("/");
-    if (rel === "src/config/load.mjs") continue;
+    if (rel in HIVE_PATH_ALLOWED) continue;
     const code = stripComments(readFileSync(file, "utf8"));
-    for (const call of code.match(/path\.join\((?:[^()]|\([^()]*\))*\)/g) ?? []) {
-      if (/homedir\(\)/.test(call) && /["'`]\.hive402["'`]/.test(call)) offenders.push(`${rel}: ${call}`);
+    for (const call of code.match(/\b(?:path\.)?(?:join|resolve)\((?:[^()]|\([^()]*\))*\)/g) ?? []) {
+      if (/["'`]\.hive402["'`]/.test(call)) offenders.push(`${rel}: ${call}`);
     }
   }
   assert.deepEqual(
     offenders,
     [],
-    "the home default belongs to src/config/load.mjs alone — a command that builds its own " +
-      "is a command that can silently write into another hive's directory:\n" + offenders.join("\n"),
+    "a hive directory belongs to src/config/load.mjs alone — a command that builds its own is a " +
+      "command that can silently read or write another hive's state (F-038, F-040). Allowed, with " +
+      `reasons:\n${Object.entries(HIVE_PATH_ALLOWED).map(([k, v]) => `  ${k} — ${v}`).join("\n")}` +
+      `\nFound outside those:\n${offenders.join("\n")}`,
   );
+});
+
+test("the allowlist names files that exist and still contain what it excuses", () => {
+  // An allowlist entry that has gone stale is a hole nobody can see. If the
+  // credential store ever stops building that path, the entry must go, or it
+  // silently licenses a future one.
+  for (const rel of Object.keys(HIVE_PATH_ALLOWED)) {
+    const full = path.join(root, rel);
+    assert.ok(existsSync(full), `${rel} is allowlisted but does not exist`);
+    assert.match(
+      stripComments(readFileSync(full, "utf8")),
+      /["'`]\.hive402["'`]/,
+      `${rel} is allowlisted but no longer builds a hive path — remove the entry`,
+    );
+  }
 });
 
 test("no command resolves a config inside a try/catch that swallows the failure", () => {
@@ -309,12 +377,33 @@ test("setup may name a config that does not exist yet, because that is where it 
   // (`setup reports a step list rather than a stack trace`): `hive402 setup
   // --config <new path>` is how a person chooses where their config goes, so
   // the one command that CREATES the file must not require it to exist.
+  //
+  // CORRECTED at F-040 (cycle 25). The contract this test exists for — setup
+  // may name a file that is not there, and does not throw — was right and is
+  // unchanged. Its last assertion was the second half of the same defect:
+  // "no config yet means the first node's own directory" is true when nobody
+  // named anywhere, and false the moment somebody did. `setup --config <a fresh
+  // path>` is somebody naming somewhere, and answering it with `~/.hive402` is
+  // how setup's own internal join wrote its acceptance record into the first
+  // hive's directory (F-040, surface 1).
   const b = box();
   const target = path.join(b.project, "not-yet.json");
   const resolved = resolveStateDir(target, { home: b.home, mustExist: false });
+  assert.equal(resolved.reason, "to-be-created", "distinct from `no-config`: a destination was named");
+  assert.equal(resolved.file, null, "and there is genuinely no file yet");
+  assert.equal(resolved.stateDir, b.project, "the destination's own directory");
+  assert.notEqual(resolved.stateDir, b.homeDefault, "never the first node's");
+});
+
+test("nothing named and nothing found still means the home default", () => {
+  // The half the corrected test above no longer covers, written down rather
+  // than left implied: with no `--config` at all there is no directory to take,
+  // and `~/.hive402` is where `setup` would create the config — so it is still
+  // that hive's own directory (DD-72's judgement, kept by DD-73).
+  const b = box();
+  const resolved = resolveStateDir(null, { home: b.home, cwd: b.root, env: null, mustExist: false });
   assert.equal(resolved.reason, "no-config");
-  assert.equal(resolved.file, null);
-  assert.equal(resolved.stateDir, b.homeDefault, "no config yet means the first node's own directory");
+  assert.equal(resolved.stateDir, b.homeDefault);
 });
 
 test("and every other command still refuses a --config that is not there", () => {

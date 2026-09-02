@@ -1044,7 +1044,6 @@ async function cmdSetup({ flags }) {
   const hive = resolveHive(flags, { partial: true, mustExist: false });
   const config = hive.config;
   const found = hive.file;
-  const stateDir = hive.stateDir;
   // FIX-126. This used to be `path.resolve("hive402.config.json")`, so a fresh
   // setup wrote its config into whatever directory the person was standing in,
   // and every later command then worked from that directory and nowhere else.
@@ -1055,6 +1054,19 @@ async function cmdSetup({ flags }) {
     found,
     home: homedir(),
   });
+
+  // ORDER MATTERS (F-040, DD-73). This used to read `hive.stateDir` above,
+  // BEFORE the destination was known — so the directory setup wrote its state
+  // into and the directory it wrote its config into were computed from two
+  // different questions, and could disagree. They agreed only when both landed
+  // on the home default, which is precisely the collision: setup's own internal
+  // join wrote its acceptance record into the first hive's directory while
+  // creating a config somewhere else entirely.
+  //
+  // Setup's state directory IS the directory of the config setup is about to
+  // write. One expression, derived from its own destination, so the two cannot
+  // drift apart again.
+  const stateDir = stateDirFrom({ declared: hive.raw?.stateDir ?? null, file: configFile });
 
   const { CredentialStore } = await import("../src/credentials/store.mjs");
   const { terminalConsent, lineReader } = await import("../src/registry/consent.mjs");

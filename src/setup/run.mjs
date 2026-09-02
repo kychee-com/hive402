@@ -290,7 +290,11 @@ export async function runSetup({
     // The NODE attests this agent (DD-51); the HUMAN named here approves it.
     agent: { name: agentName, pubkey: derivePubkey(agentKey), ownerPubkey },
   });
-  steps.push(step("config", "done", written));
+  // The state directory is named here, resolved and absolute (F-040, DD-73).
+  // The config records `"."`, which is portable but tells a person nothing on
+  // its own; this is the line that answers "where does this node keep its
+  // things" at the moment they first need it, without them running `status`.
+  steps.push(step("config", "done", `${written}\n              state: ${stateDir}`));
 
   steps.push(
     step(
@@ -352,6 +356,24 @@ export function starterConfig({ relayUrl, nodePubkey, channel, agent, tools = nu
   return {
     relayUrl: String(relayUrl).replace(/^http:\/\//i, "ws://").replace(/^https:\/\//i, "wss://"),
     node: { pubkey: nodePubkey },
+    // Where this node's state goes (F-040, AC-72, DD-73).
+    //
+    // The config `setup` wrote used to carry no `stateDir` at all, so every
+    // state-scoped write fell to a default that was the same fixed path for
+    // every config on the machine — and a second hive filed its join record,
+    // its attestation, its pid lock and its log into the FIRST hive's
+    // directory. The default is now this config's own directory, and this key
+    // says so out loud rather than leaving it to an undocumented rule.
+    //
+    // `"."` rather than the absolute path, deliberately: it resolves through
+    // the same relative rule (FIX-195, against the config that declares it, not
+    // the cwd) to exactly the directory the default would have chosen, and it
+    // survives the hive folder being moved or copied — which a scratch hive and
+    // a second-host handover both do. An absolute path here would point at the
+    // old location after a move, and a node that finds an empty state directory
+    // looks like a first run. `status` and this command's own report name the
+    // resolved absolute path, which is where a person actually asks.
+    stateDir: ".",
     // Where the tools are (F-039, AC-44, DD-71).
     //
     // `up` and `doctor` have always read this key. Nothing ever wrote it, so on

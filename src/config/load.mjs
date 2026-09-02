@@ -151,8 +151,27 @@ export function homeStateDir(home = homedir()) {
 // resolved against the cwd follows the operator around, so one config means
 // different directories on different days. An absolute path is left exactly as
 // written — the operator's answer is not rewritten.
+//
+// And a config that declares NOTHING is answered the same way (F-040, DD-73):
+// its own directory. This used to be `homeStateDir(home)` — one fixed string
+// for every config on the machine — which is a collision by construction in a
+// product whose AC-72 promises each node "its own identity, its own state and
+// its own configuration". A file on disk has a directory, and that directory is
+// a per-config answer that needs no new field and no migration.
+//
+// The directory EXACTLY, never a `.hive402` inside it. F-040's own
+// recommendation suggested the latter; for a config already living in
+// `~/.hive402` that invents a second, empty `~/.hive402/.hive402`, and the node
+// running out of the first one presents as a first-run install and re-registers.
+// `dirname` is the only shape that is right for a second hive AND a no-op for
+// the machine's first one.
+//
+// The home default survives for the one case with no file at all: a machine
+// with no config anywhere has one hive, and `~/.hive402` is where `setup` would
+// create its config — so that is still that hive's own directory, reached by the
+// same rule rather than as an exception to it.
 export function stateDirFrom({ declared = null, file = null, home = homedir() } = {}) {
-  if (!declared) return homeStateDir(home);
+  if (!declared) return file ? path.dirname(path.resolve(file)) : homeStateDir(home);
   if (path.isAbsolute(declared)) return declared;
   return path.resolve(file ? path.dirname(path.resolve(file)) : process.cwd(), declared);
 }
@@ -170,6 +189,24 @@ export function resolveStateDir(explicit = null, { mustExist = true, ...location
     // Except for `setup`, which passes `mustExist: false` — naming a config
     // that does not exist yet is how you tell setup WHERE to create it.
     if (explicit && mustExist) throw err;
+
+    // ...and having been told where, that is the answer (F-040 surface 1,
+    // DD-73). This branch used to return the home default, so `setup --config
+    // <a fresh path>` wrote its join acceptance record into the FIRST hive's
+    // directory before the config it was creating existed — the one leak
+    // `stateDirFrom` alone cannot reach, because there is no file to take the
+    // directory of. `to-be-created` is deliberately distinct from `no-config`:
+    // "you named a destination" and "there is nothing anywhere" are different
+    // answers and a caller should be able to tell them apart.
+    if (explicit) {
+      return {
+        stateDir: path.dirname(path.resolve(explicit)),
+        file: null,
+        raw: null,
+        config: null,
+        reason: "to-be-created",
+      };
+    }
     return { stateDir: homeStateDir(home), file: null, raw: null, config: null, reason: "no-config" };
   }
 
