@@ -1,0 +1,43 @@
+# Dependencies — declared in package.json and fetched by `npm install`.
+# These were tracked by accident; @noble/curves is a normal dependency, not
+# a vendored one, so shipping it in git served no purpose.
+node_modules/
+
+# Agent working memory. Useful locally, but it is internal working notes and
+# this repo is destined to be public.
+.claude/
+
+# Node runtime state written by `hive402 up` / `register`: PID file, per-agent
+# working dirs, owner attestations, agent logs. Machine-local, regenerated.
+.hive402/
+
+# Process scratch from running the node detached.
+*.log
+*.err
+node.out
+
+# Local config that may name real rooms, agents or key env vars. The committed
+# example is hive402.config.example.json.
+hive402.config.json
+*.config.json.bak
+
+# Credentials never belong here — they live in the OS keychain (see AGENTS.md).
+# This is a backstop, not the mechanism.
+.env
+.env.*
+dev-keys.json
+*.pem
+*.key
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Build artifacts. `npm pack` writes hive402-<version>.tgz next to the
+# package; one was committed by accident in 68c270e and shipped 684KB of the
+# repo back into the repo. The tarball is the beta channel, but it is built
+# fresh at ship time and never stored.
+*.tgz

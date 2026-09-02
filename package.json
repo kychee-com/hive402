@@ -1,0 +1,40 @@
+{
+  "name": "hive402",
+  "version": "0.3.5",
+  "description": "Turn a Buzz channel into a working hive room: humans and agents building together.",
+  "type": "module",
+  "bin": {
+    "hive402": "./bin/cli.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "buzz",
+    "nostr",
+    "agents",
+    "claude",
+    "hive",
+    "chat"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kychee-com/hive402.git"
+  },
+  "homepage": "https://hive402.com",
+  "bugs": {
+    "url": "https://github.com/kychee-com/hive402/issues"
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@noble/curves": "^2.3.0"
+  }
+}
