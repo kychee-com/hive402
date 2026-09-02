@@ -306,7 +306,13 @@ test("the join command hands the config's ref to runJoin", () => {
   );
   // Through the AC-73 seam since 0.9.0: resolving a config and saying WHICH
   // hive it named are one act, so no command calls loadConfig directly.
-  assert.match(body, /config\s*=\s*resolveHive\(/, "and must actually load a config to read it from");
+  // The shape changed with F-038: `join` resolves PARTIALLY, because a config
+  // that is not yet launch-ready still names a state directory. It is the same
+  // seam and the same banner, so this asserts the two properties directly
+  // rather than one spelling of them.
+  assert.match(body, /=\s*resolveHive\(/, "and must actually resolve through the announcing seam");
+  assert.match(body, /\bconfig\b/, "binding the config it read, so the ref above is reachable");
+  assert.doesNotMatch(body, /loadConfig\(/, "never around the seam");
 });
 
 test("the register command lets the config decide when no flag was given", () => {

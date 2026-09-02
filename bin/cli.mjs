@@ -12,7 +12,15 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { loadConfig, setSetting, candidatePaths, setupConfigTarget, hiveBanner } from "../src/config/load.mjs";
+import {
+  loadConfig,
+  setSetting,
+  candidatePaths,
+  setupConfigTarget,
+  hiveBanner,
+  resolveStateDir,
+  stateDirFrom,
+} from "../src/config/load.mjs";
 import { resolveInstructions } from "../src/launcher/instructions.mjs";
 import { WATCHING_MARKER } from "../src/node/detach.mjs";
 import { PACKAGE_VERSION } from "../src/version.mjs";
@@ -30,7 +38,32 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // `announce: false` is for output a machine parses (`status` is JSON, and a
 // banner line above it would break every caller); those commands carry the
 // same two facts as fields instead.
-function resolveHive(flags, { announce = true } = {}) {
+// `partial` is for the four commands that run BEFORE a config is complete —
+// keygen, join, setup, profile (F-038, DD-72). They each used to do this:
+//
+//     try { config = resolveHive(flags).config; stateDir = defaultStateDir(config); }
+//     catch { stateDir = path.join(homedir(), ".hive402"); }
+//
+// `parseConfig` rejects a config with no rooms, a room needs a registered
+// agent, and an agent cannot exist until after the join — so the throwing
+// branch WAS the normal branch, and that catch silently relocated every write
+// into the home directory, which is the FIRST node's own state directory. On
+// the machine this was found on, that is the production node's.
+//
+// Routed through the seam rather than around it, so AC-73 still holds: these
+// commands now announce which hive they acted on even when its config is not
+// yet launch-ready, which is more than they did before, not less.
+//
+// `mustExist` is false for `setup` alone: an explicit --config naming a file
+// that is not there is that command's DESTINATION, not a mistake.
+function resolveHive(flags, { announce = true, partial = false, mustExist = true } = {}) {
+  if (partial) {
+    const hive = resolveStateDir(flags?.config ?? null, { mustExist });
+    if (announce && hive.file) {
+      console.log(hiveBanner({ configFile: hive.file, config: hive.config ?? hive.raw ?? {} }));
+    }
+    return hive;
+  }
   const loaded = loadConfig(flags?.config);
   if (announce) console.log(hiveBanner({ configFile: loaded.file, config: loaded.config }));
   return loaded;
@@ -421,8 +454,12 @@ function die(message, code = 1) {
   process.exit(code);
 }
 
-function defaultStateDir(config) {
-  return config.stateDir ?? path.join(homedir(), ".hive402");
+// The config file is passed so a RELATIVE `stateDir` resolves against the
+// config that declares it rather than against wherever the command was run
+// from (FIX-195) — the same class as FIX-126. One seam, so `up` and `join`
+// cannot disagree about where this node keeps its things.
+function defaultStateDir(config, file = null) {
+  return stateDirFrom({ declared: config?.stateDir ?? null, file });
 }
 
 // --- commands --------------------------------------------------------------
@@ -454,14 +491,7 @@ async function cmdKeygen({ flags }) {
   // AC-56: ask before the identity exists. `keygen` runs at the very start of
   // setup, so a config is optional here — the checker reports what it could not
   // ask rather than pretending the name is free.
-  let config = null;
-  let stateDir = path.join(homedir(), ".hive402");
-  try {
-    config = resolveHive(flags).config;
-    stateDir = defaultStateDir(config);
-  } catch {
-    /* no config yet — normal at this point in setup */
-  }
+  const { config, stateDir } = resolveHive(flags, { partial: true });
 
   await keygen({
     store,
@@ -678,12 +708,12 @@ async function cmdUp({ flags }) {
   // and NOT here. The parent echoes the child's output, so printing them before
   // the fork showed every one of them twice.
   if (!flags.foreground) {
-    await startDetached({ flags, stateDir: defaultStateDir(config) });
+    await startDetached({ flags, stateDir: defaultStateDir(config, file) });
     return;
   }
 
   const { makeSupervisor } = await import("../src/node/runtime.mjs");
-  const sup = makeSupervisor({ config, configFile: file, stateDir: defaultStateDir(config) });
+  const sup = makeSupervisor({ config, configFile: file, stateDir: defaultStateDir(config, file) });
 
   await sup.start();
 
@@ -818,9 +848,9 @@ async function cmdDown({ flags }) {
     console.log(DOWN_USAGE);
     return;
   }
-  const { config } = resolveHive(flags);
+  const { config, file } = resolveHive(flags);
   const { stopFromPidFile } = await import("../src/node/runtime.mjs");
-  const results = stopFromPidFile(defaultStateDir(config));
+  const results = stopFromPidFile(defaultStateDir(config, file));
   if (results.length === 0) {
     console.log("hive402: nothing to stop.");
     return;
@@ -859,7 +889,7 @@ async function cmdStatus({ flags }) {
   // `flags.config`, and is the whole point when there wasn't one (FIX-141).
   const { config, file } = resolveHive(flags, { announce: false });
   const { readStatus } = await import("../src/node/runtime.mjs");
-  const status = await readStatus({ config, stateDir: defaultStateDir(config), configFile: file });
+  const status = await readStatus({ config, stateDir: defaultStateDir(config, file), configFile: file });
   console.log(JSON.stringify(status, null, 2));
 }
 
@@ -880,7 +910,7 @@ async function cmdRegister({ flags }) {
     config,
     configFile: file,
     raw,
-    stateDir: defaultStateDir(config),
+    stateDir: defaultStateDir(config, file),
     agentName: flags.agent,
     // Null, not "keychain" (FIX-136): absent means "the config decides", and
     // the config's `node.privateKeyRef` is what `up` already obeys. A flag is
@@ -917,7 +947,7 @@ async function cmdRetire({ flags, positional }) {
     config,
     configFile: file,
     raw,
-    stateDir: defaultStateDir(config),
+    stateDir: defaultStateDir(config, file),
     agentName: name,
   });
 
@@ -965,14 +995,7 @@ async function cmdJoin({ flags, positional }) {
   // always honoured `node.privateKeyRef`; this command read the credential
   // store's default entry instead, which on a box running a production node is
   // the production identity.
-  let stateDir;
-  let config = null;
-  try {
-    config = resolveHive(flags).config;
-    stateDir = defaultStateDir(config);
-  } catch {
-    stateDir = path.join(homedir(), ".hive402");
-  }
+  const { config, stateDir } = resolveHive(flags, { partial: true });
 
   const { CredentialStore } = await import("../src/credentials/store.mjs");
   const { terminalConsent, lineReader } = await import("../src/registry/consent.mjs");
@@ -1018,17 +1041,10 @@ async function cmdSetup({ flags }) {
     console.log(SETUP_USAGE);
     return;
   }
-  let config = null;
-  let found = null;
-  let stateDir = path.join(homedir(), ".hive402");
-  try {
-    const loaded = resolveHive(flags);
-    config = loaded.config;
-    found = loaded.file;
-    stateDir = defaultStateDir(config);
-  } catch {
-    /* no config yet — that is what this command is for */
-  }
+  const hive = resolveHive(flags, { partial: true, mustExist: false });
+  const config = hive.config;
+  const found = hive.file;
+  const stateDir = hive.stateDir;
   // FIX-126. This used to be `path.resolve("hive402.config.json")`, so a fresh
   // setup wrote its config into whatever directory the person was standing in,
   // and every later command then worked from that directory and nowhere else.
@@ -1082,18 +1098,12 @@ async function cmdProfile({ flags }) {
     console.log(PROFILE_USAGE);
     return;
   }
-  let config = null;
-  let stateDir;
-  try {
-    const loaded = resolveHive(flags);
-    config = loaded.config;
-    stateDir = defaultStateDir(config);
-  } catch {
-    // A profile can be published before there is a config — that file is
-    // written later in setup. The join record is the only source that could be
-    // right at that moment, and `resolveRelay` reads it.
-    stateDir = path.join(homedir(), ".hive402");
-  }
+  // A profile can be published before there is a config — that file is written
+  // later in setup — so this resolves partially and the join record supplies
+  // the relay when the config cannot (`resolveRelay` reads it).
+  const hive = resolveHive(flags, { partial: true });
+  const config = hive.config;
+  const stateDir = hive.stateDir;
 
   const { CredentialStore } = await import("../src/credentials/store.mjs");
   const { runProfile } = await import("../src/registry/profilecommand.mjs");
@@ -1114,8 +1124,8 @@ async function cmdAudit({ flags }) {
     console.log(AUDIT_USAGE);
     return;
   }
-  const { config } = resolveHive(flags);
-  const file = path.join(defaultStateDir(config), "audit.jsonl");
+  const { config, file: configFile } = resolveHive(flags);
+  const file = path.join(defaultStateDir(config, configFile), "audit.jsonl");
   if (!existsSync(file)) {
     console.log(`hive402: no audit log yet at ${file}`);
     return;
@@ -1201,7 +1211,7 @@ async function cmdDoctor({ flags }) {
     }
   }
 
-  const stateDir = defaultStateDir(config);
+  const stateDir = defaultStateDir(config, loaded.file);
   for (const room of config.rooms) {
     for (const agent of room.agents) {
       const att = path.join(stateDir, "agents", `${agent.name}.json`);

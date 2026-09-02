@@ -82,14 +82,17 @@ export function findConfigFile(explicit, locations = {}) {
 // Returns both the parsed config and the raw object, because `config set` must
 // write back the file the human wrote — not a normalised version of it with
 // every default materialised.
-export function loadConfig(explicit) {
-  const file = findConfigFile(explicit);
-  let raw;
+function readRaw(file) {
   try {
-    raw = JSON.parse(readFileSync(file, "utf8"));
+    return JSON.parse(readFileSync(file, "utf8"));
   } catch (err) {
     throw new Error(`${file}: not valid JSON — ${err.message}`);
   }
+}
+
+export function loadConfig(explicit) {
+  const file = findConfigFile(explicit);
+  const raw = readRaw(file);
   let config;
   try {
     config = parseConfig(raw);
@@ -97,6 +100,92 @@ export function loadConfig(explicit) {
     throw new Error(`${file}: ${err.message}`);
   }
   return { file, raw, config };
+}
+
+// ── Which state directory is this? (F-038, DD-72) ─────────────────────────
+//
+// Red Team cycle 21: a throwaway node joined a policy-gated community with its
+// own `--config`, whose config declared its own `stateDir`, and the acceptance
+// record landed in Barry's PRODUCTION state directory. The throwaway's own
+// `stateDir` was never created at all.
+//
+// The write site was never the problem — `writeJoinRecord({ stateDir, record })`
+// has always taken a `stateDir`, and `cmdJoin` already called
+// `defaultStateDir(config)`. The problem was one line below, at four commands:
+//
+//     try { config = resolveHive(flags).config; stateDir = defaultStateDir(config); }
+//     catch { stateDir = path.join(homedir(), ".hive402"); }
+//
+// `parseConfig` REJECTS a config with no rooms; a room needs a registered
+// agent; an agent cannot be registered until after the join. So at the moment
+// `join` runs, a legitimately-authored config throws, and that `catch`
+// swallowed it and relocated the write to the home directory — which is where
+// the machine's FIRST node lives, because a config that declares no `stateDir`
+// (Barry's does not) resolves there too.
+//
+// The catch collapsed three outcomes this module already tells apart. They are
+// three different answers and only one of them is "carry on quietly":
+//
+//   no-config  nothing anywhere        → the home default, silently. A machine
+//                                        with no config has one node and this
+//                                        is its directory. Step one, by design.
+//   unparsed   a file that is not yet
+//              launch-ready            → ITS OWN declared stateDir, read from
+//                                        the raw object. Reading one top-level
+//                                        string must not require the config to
+//                                        be ready to run agents.
+//   parsed     a complete config       → the same answer, via the same seam.
+//
+// and one hard failure: an explicit `--config` that cannot be found, or any
+// config file that is not readable JSON. The operator named a file, or a file
+// is plainly there; writing somewhere else instead is not an interpretation of
+// either.
+export const STATE_DIR_NAME = ".hive402";
+
+export function homeStateDir(home = homedir()) {
+  return path.join(home, STATE_DIR_NAME);
+}
+
+// A relative `stateDir` belongs to the config that declares it, not to the
+// directory the command happened to run from. Same class as FIX-126: a path
+// resolved against the cwd follows the operator around, so one config means
+// different directories on different days. An absolute path is left exactly as
+// written — the operator's answer is not rewritten.
+export function stateDirFrom({ declared = null, file = null, home = homedir() } = {}) {
+  if (!declared) return homeStateDir(home);
+  if (path.isAbsolute(declared)) return declared;
+  return path.resolve(file ? path.dirname(path.resolve(file)) : process.cwd(), declared);
+}
+
+export function resolveStateDir(explicit = null, { mustExist = true, ...locations } = {}) {
+  const home = locations.home ?? homedir();
+
+  let file;
+  try {
+    file = findConfigFile(explicit, locations);
+  } catch (err) {
+    // An explicit --config that is not there is an ERROR: relocating the write
+    // into another node's directory is the defect, not a fallback.
+    //
+    // Except for `setup`, which passes `mustExist: false` — naming a config
+    // that does not exist yet is how you tell setup WHERE to create it.
+    if (explicit && mustExist) throw err;
+    return { stateDir: homeStateDir(home), file: null, raw: null, config: null, reason: "no-config" };
+  }
+
+  const raw = readRaw(file);
+
+  let config = null;
+  let reason = "parsed";
+  try {
+    config = parseConfig(raw);
+  } catch {
+    // Not launch-ready, which at join/setup/keygen time is the NORMAL state of
+    // a real config rather than an error. The state directory is still known.
+    reason = "unparsed";
+  }
+
+  return { stateDir: stateDirFrom({ declared: raw?.stateDir ?? null, file, home }), file, raw, config, reason };
 }
 
 // AC-20 — change a setting through the config file. The path is
