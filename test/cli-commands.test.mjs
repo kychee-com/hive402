@@ -610,3 +610,64 @@ test("a MUTATING command spawned here writes into the sandbox, not the real stor
     "running the suite must not add, change or remove anything in the real credential store",
   );
 });
+
+
+// --- F-039: doctor, on the config shape `setup` actually writes -------------
+//
+// `configFile()` above has no `tools` key, which is exactly what
+// `starterConfig` produced: the one config shape that had never been launched.
+// doctor read `config.tools.*` raw, joined the Windows binary names on inline,
+// and reported "tools.buzzDir not set" / "tools.adapter not set" — accurate,
+// useless, and naming no remedy. `up` then failed separately with a spawn
+// ENOENT and a raw ERR_INVALID_ARG_TYPE.
+//
+// The environment is blanked rather than inherited so this is the same test on
+// every machine: with nowhere to look, all three tools are genuinely missing
+// whether or not the person running the suite has Buzz installed. That is this
+// finding's own lesson — a fixture built from the local machine is how twenty
+// cycles missed it.
+const NOWHERE = () => {
+  const dir = path.join(mkdtempSync(path.join(tmpdir(), "hive402-nowhere-")), "gone");
+  return { LOCALAPPDATA: dir, PROGRAMFILES: dir, APPDATA: dir, HOME: dir, USERPROFILE: dir, PATH: dir };
+};
+
+test("doctor names the remedy for a tool it cannot find, rather than 'not set'", () => {
+  const { file } = configFile();
+  const r = runFrom({ cwd: tmpdir(), env: NOWHERE() }, "doctor", "--config", file);
+  const out = r.stdout + r.stderr;
+
+  assert.equal(out.includes("tools.buzzDir not set"), false, out);
+  assert.equal(out.includes("tools.adapter not set"), false, out);
+
+  assert.match(out, /ACP adapter not found/, out);
+  assert.ok(out.includes("npm install -g @agentclientprotocol/claude-agent-acp"), out);
+  assert.match(out, /buzz-acp/, out);
+  assert.match(out, /Looked in/, out);
+  // Never the failure mode the launcher used to produce.
+  assert.equal(out.includes("ERR_INVALID_ARG_TYPE"), false, out);
+});
+
+test("doctor asks about the platform's own binary name, not a hardcoded .exe", () => {
+  // The half that made Tal's host unlaunchable under ANY configuration.
+  const { file } = configFile();
+  const r = runFrom({ cwd: tmpdir(), env: NOWHERE() }, "doctor", "--config", file);
+  const out = r.stdout + r.stderr;
+  const harness = process.platform === "win32" ? "buzz-acp.exe" : "buzz-acp";
+  const wrong = process.platform === "win32" ? null : "buzz-acp.exe";
+  assert.ok(out.includes(harness), out);
+  if (wrong) assert.equal(out.includes(wrong), false, "a Windows name must not appear off Windows");
+});
+
+test("doctor reports a configured path against ITSELF, never against a discovered one", () => {
+  // Doctrine 1, end to end through the command: an explicit directory is the
+  // operator's answer, so a miss is reported at THEIR path. Silently reporting
+  // a different Buzz found somewhere else is how "it works and I cannot tell
+  // you which binary ran" starts.
+  const { file } = configFile({ tools: { buzzDir: path.join(tmpdir(), "hive402-operator-said-here") } });
+  const r = runFrom({ cwd: tmpdir(), env: NOWHERE() }, "doctor", "--config", file);
+  const out = r.stdout + r.stderr;
+  const named = path.join(tmpdir(), "hive402-operator-said-here", process.platform === "win32" ? "buzz-acp.exe" : "buzz-acp");
+  assert.ok(out.includes(named), out);
+  // Nothing else was searched, so it must not claim otherwise.
+  assert.equal(out.includes("Looked in"), false, out);
+});

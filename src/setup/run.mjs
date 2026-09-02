@@ -31,7 +31,7 @@
 
 import { assertDisplayName, publishNodeProfile } from "../registry/profile.mjs";
 import { readJoinRecord, rememberDisplayName } from "../registry/joinrecord.mjs";
-import { buzzBinPath } from "../registry/profilecommand.mjs";
+import { resolveTools, summariseMissingTool, toolsBlock } from "../tools/resolve.mjs";
 import { cliRelayUrl } from "../relay/buzzcli.mjs";
 import { checkAgentName, describeNameFindings } from "../registry/namecheck.mjs";
 import { derivePubkey, generateSecretKey } from "../credentials/keys.mjs";
@@ -69,6 +69,15 @@ export async function runSetup({
   // have. Real callers pass nothing and get `src/relay/query.mjs`.
   queryEvents = undefined,
   writeConfig,
+  // The tool discovery (F-039). Real callers pass nothing and get the same
+  // resolver `up` and `doctor` use.
+  //
+  // Injectable ONLY so the setup tests are hermetic, and that is this finding's
+  // own lesson: every throwaway config in twenty cycles was built on a machine
+  // that happened to have Buzz where Buzz lives, so the shape a fresh machine
+  // produces was never actually run. A setup test that reads the real
+  // filesystem would pass or fail depending on who ran it.
+  discoverTools = resolveTools,
   log = console.log,
   generate = generateSecretKey,
 }) {
@@ -131,7 +140,14 @@ export async function runSetup({
   }
 
   const relayUrl = config?.relayUrl ?? joined.origin;
-  const binPath = buzzBinPath(config?.tools?.buzzDir ?? null);
+  // Where the tools are — resolved ONCE, used for this command's own relay
+  // calls, and then WRITTEN INTO the config below (F-039, AC-44).
+  //
+  // This command already discovered `buzz` here and threw the answer away. The
+  // config it wrote had no `tools` key at all, so `up` read nulls out of it and
+  // could not launch, one line after setup printed "Setup is complete."
+  const tools = discoverTools(config, { configFile });
+  const binPath = tools.buzz.path;
   const cliFor = (privateKey) =>
     (makeCli ?? (() => null))({ binPath, relayUrl, privateKey });
 
@@ -254,11 +270,23 @@ export async function runSetup({
   }
 
   // ── 6. The config ───────────────────────────────────────────────────────
+  // What `up` will run, said HERE rather than discovered at the first launch
+  // failure. Not `blocked`: the config and the register instruction are still
+  // worth having, and `doctor` and `up` both name the same remedy again.
+  steps.push(
+    tools.missing.length
+      ? step("tools", "skipped", tools.missing.map(summariseMissingTool).join("; "))
+      : step("tools", "done", `${tools.harness.path}  (adapter: ${tools.adapter.path})`),
+  );
+
   const written = writeConfig({
     file: configFile,
     relayUrl,
     nodePubkey: derivePubkey(nodeKey),
     channel: firstChannel,
+    // The block nobody wrote (F-039). Resolved above, recorded here, so the
+    // file states what will run and an operator has something to edit.
+    tools: toolsBlock(tools),
     // The NODE attests this agent (DD-51); the HUMAN named here approves it.
     agent: { name: agentName, pubkey: derivePubkey(agentKey), ownerPubkey },
   });
@@ -320,10 +348,21 @@ function report({ steps, say }) {
 // their defaults (research and build OFF), and the channel is written into the
 // deprecated `rooms[]` slot because the schema still requires one — the node
 // follows membership from the relay regardless (AC-48).
-export function starterConfig({ relayUrl, nodePubkey, channel, agent }) {
+export function starterConfig({ relayUrl, nodePubkey, channel, agent, tools = null }) {
   return {
     relayUrl: String(relayUrl).replace(/^http:\/\//i, "ws://").replace(/^https:\/\//i, "wss://"),
     node: { pubkey: nodePubkey },
+    // Where the tools are (F-039, AC-44, DD-71).
+    //
+    // `up` and `doctor` have always read this key. Nothing ever wrote it, so on
+    // a fresh machine setup printed "Setup is complete. Run: hive402 up" and
+    // `up` could not launch an agent at all. The values are what setup
+    // RESOLVED, so the file says what will run rather than leaving discovery
+    // invisible — and an operator who needs to override has something to edit.
+    //
+    // `null` where nothing was found: an invented path is worse than an
+    // admitted absence, and the schema treats a null and an absent key alike.
+    tools: tools ?? { buzzDir: null, adapter: null },
     rooms: [
       {
         channel,

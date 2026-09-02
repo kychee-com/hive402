@@ -11,6 +11,7 @@ import path from "node:path";
 import { schnorr } from "@noble/curves/secp256k1.js";
 
 import { Supervisor } from "./supervisor.mjs";
+import { assertToolsPresent, buzzBinPath, resolveTools } from "../tools/resolve.mjs";
 import { PACKAGE_VERSION } from "../version.mjs";
 import { classifyRecorded, makeIdentifier } from "./liveness.mjs";
 import { agentStateFromVerdict, readAgentLog } from "./respawn.mjs";
@@ -187,9 +188,22 @@ export function makeSupervisor({
   // node key" on its own any more, and must not be able to.
   resolveKey = makeKeyResolver({ nodePubkey: config?.node?.pubkey }),
 }) {
-  const buzzBin = path.join(config.tools.buzzDir ?? "", "buzz.exe");
+  // Every tool path this node will use, resolved once, and a refusal BEFORE
+  // anything is constructed or spawned (F-039).
+  //
+  // `up` on a fresh machine used to reach child_process with a bare relative
+  // "buzz-acp.exe" and a `null` adapter argument, so the operator got an ENOENT
+  // or a raw ERR_INVALID_ARG_TYPE from a config the schema had called valid.
+  // This is the seam where "doctor passing means up can launch" becomes true:
+  // `doctor` asks the same resolver the same question.
+  const tools = resolveTools(config, { configFile });
+  assertToolsPresent(tools, { configFile });
+  const buzzBin = tools.buzz.path;
   return new Supervisor({
     config,
+    configFile,
+    harnessPath: tools.harness.path,
+    adapterPath: tools.adapter.path,
     // An `instructionsFile` is written relative to the config that names it.
     configDir: configFile ? path.dirname(path.resolve(configFile)) : null,
     stateDir,
@@ -386,7 +400,7 @@ export async function registerAgent({
   if (!room) throw new Error(`no agent named "${agentName}" in this config`);
   const agent = room.agents.find((a) => a.name === agentName);
 
-  const buzzBin = path.join(config.tools.buzzDir ?? "", "buzz.exe");
+  const buzzBin = buzzBinPath(config.tools.buzzDir ?? null);
   const cliFor = makeCli ?? ((opts) => new BuzzCli({ binPath: buzzBin, relayUrl: config.relayUrl, ...opts }));
   const sponsorKey = await resolveKey(sponsorReference, { role: "sponsor" });
   const sponsorCli = cliFor({ role: "sponsor", privateKey: sponsorKey });
@@ -632,7 +646,7 @@ export async function runRetire({
   });
   if (!verdict.ok) throw new Error(`cannot retire "${agentName}": ${verdict.reason}`);
 
-  const buzzBin = path.join(config.tools.buzzDir ?? "", "buzz.exe");
+  const buzzBin = buzzBinPath(config.tools.buzzDir ?? null);
   const result = await retireAgent({
     agent,
     channel: room.channel,

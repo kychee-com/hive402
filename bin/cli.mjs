@@ -1179,16 +1179,27 @@ async function cmdDoctor({ flags }) {
   const { configDeprecations } = await import("../src/config/schema.mjs");
   for (const warning of configDeprecations(raw)) console.log(`note  ${warning}`);
 
-  const buzz = config.tools.buzzDir ? path.join(config.tools.buzzDir, "buzz.exe") : null;
-  say(Boolean(buzz && existsSync(buzz)), `buzz CLI: ${buzz ?? "tools.buzzDir not set"}`);
-
-  const harness = config.tools.buzzDir ? path.join(config.tools.buzzDir, "buzz-acp.exe") : null;
-  say(Boolean(harness && existsSync(harness)), `buzz-acp harness: ${harness ?? "tools.buzzDir not set"}`);
-
-  say(
-    Boolean(config.tools.adapter && existsSync(config.tools.adapter)),
-    `ACP adapter: ${config.tools.adapter ?? "tools.adapter not set"}`,
-  );
+  // THE SAME RESOLVER `up` USES (F-039). "doctor passing" has to mean "up can
+  // launch", and these three lines used to read `tools.*` raw with the Windows
+  // binary names joined on inline — so on a fresh machine they reported
+  // `tools.buzzDir not set` / `tools.adapter not set`: accurate, useless, and
+  // naming no remedy, on a box where discovery would have succeeded. Worse, on
+  // macOS and Linux they asked about a `.exe` that is not what the file is
+  // called, so a correctly configured host failed here too.
+  const { resolveTools, describeMissingTool } = await import("../src/tools/resolve.mjs");
+  const tools = resolveTools(config, { configFile: loaded.file });
+  const TOOL_LABEL = { buzz: "buzz CLI", "buzz-acp": "buzz-acp harness", adapter: "ACP adapter" };
+  for (const entry of [tools.buzz, tools.harness, tools.adapter]) {
+    say(entry.exists, `${TOOL_LABEL[entry.tool]}: ${entry.path ?? "not found"}`);
+    // The remedy, indented under its own FAIL. `up` refuses with this exact
+    // text; printing it here is what makes doctor actionable rather than merely
+    // correct.
+    if (!entry.exists) {
+      for (const line of describeMissingTool(entry, { configFile: loaded.file }).split("\n")) {
+        console.log(`      ${line}`);
+      }
+    }
+  }
 
   const stateDir = defaultStateDir(config);
   for (const room of config.rooms) {
@@ -1362,10 +1373,21 @@ async function cmdDoctor({ flags }) {
   // the binaries and said `ok` unconditionally — Buzz silently updated
   // mid-project and doctor blessed both builds with different hashes.
   const pinnedNames = Object.keys(config.buzzBuild?.sha256 ?? {});
-  const fingerprintNames = [...new Set(["buzz.exe", "buzz-acp.exe", ...pinnedNames])];
+  // The binaries are named by the resolver, not spelled out here (F-039): on a
+  // mac the files really are `buzz` and `buzz-acp`, so a hardcoded `.exe` made
+  // this check unrunnable there. An existing pin keyed the Windows way is still
+  // honoured — `pinnedNames` is unioned in, so what a config already records is
+  // still fingerprinted and still compared.
+  const fingerprintNames = [
+    ...new Set([path.basename(tools.buzz.path), path.basename(tools.harness.path), ...pinnedNames]),
+  ];
+  // Where the binaries were actually found, so a discovered Buzz is pinnable
+  // too — not only a configured one.
+  const binDir =
+    config.tools.buzzDir ?? (tools.buzz.source === "none" ? null : path.dirname(tools.buzz.path));
   const fingerprints = {};
   for (const name of fingerprintNames) {
-    const fp = config.tools.buzzDir ? fingerprintBinary(path.join(config.tools.buzzDir, name)) : null;
+    const fp = binDir ? fingerprintBinary(path.join(binDir, name)) : null;
     if (fp) fingerprints[name] = fp;
     else say(false, `buzz build pin — ${name} not found under tools.buzzDir`);
   }

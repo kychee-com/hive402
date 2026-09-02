@@ -55,6 +55,37 @@ import path from "node:path";
 import { keygen, removePrivateKey, derivePubkey } from "../src/credentials/keys.mjs";
 import { makeNameCheck } from "../src/registry/namecheckcommand.mjs";
 import { runSetup, starterConfig } from "../src/setup/run.mjs";
+import { resolveTools } from "../src/tools/resolve.mjs";
+
+// ── The tool discovery, driven from a fixture rather than from THIS box ───
+//
+// F-039's own lesson, encoded. Every throwaway config in twenty cycles was
+// built on a machine that happened to have Buzz installed where Buzz installs
+// itself, so the one config shape a fresh machine produces — the one setup
+// writes — was never actually launched. A setup test that reads the real
+// filesystem is the same hole one level up: it would pass or fail depending on
+// who ran it, and it would write this box's real paths into its own fixture.
+//
+// This is the REAL resolver with `platform`, `env`, `exists` and `npmRoot`
+// injected, so what is exercised is the product's own discovery rather than a
+// stand-in for it.
+const BUZZ_DIR = "/opt/buzz";
+const NPM_ROOT = "/opt/npm";
+const ADAPTER = path.join(NPM_ROOT, "@agentclientprotocol", "claude-agent-acp", "dist", "index.js");
+const INSTALLED = new Set([path.join(BUZZ_DIR, "buzz"), path.join(BUZZ_DIR, "buzz-acp"), ADAPTER]);
+
+const hermeticTools =
+  ({ installed = INSTALLED } = {}) =>
+  (config, opts) =>
+    resolveTools(config, {
+      ...opts,
+      platform: "linux",
+      env: {},
+      npmRoot: NPM_ROOT,
+      moduleUrl: "file:///checkout/src/tools/resolve.mjs",
+      exists: (p) => installed.has(p),
+    });
+
 import { writeJoinRecord } from "../src/registry/joinrecord.mjs";
 
 const lower = (v) => String(v ?? "").toLowerCase();
@@ -225,6 +256,7 @@ function setupFixture({ joined = null } = {}) {
     said,
     configFile: path.join(stateDir, "hive402.config.json"),
     log: (l) => said.push(String(l)),
+    discoverTools: hermeticTools(),
     writeConfig: (args) => {
       writeFileSync(args.file, `${JSON.stringify(starterConfig(args), null, 2)}\n`, "utf8");
       return args.file;
@@ -522,7 +554,7 @@ test("FIX-181: the setup wizard names a same-owner collision as the owner's own"
     channel: CHANNEL,
     makeCli: wire.makeCli,
     queryEvents: wire.queryEvents,
-    writeConfig: f.writeConfig,
+    writeConfig: f.writeConfig, discoverTools: f.discoverTools,
     log: f.log,
     generate: () => AGENT_SK,
   });
@@ -553,7 +585,7 @@ test("FIX-181: the wizard's stranger collision is byte-identical to today's", as
     channel: CHANNEL,
     makeCli: wire.makeCli,
     queryEvents: wire.queryEvents,
-    writeConfig: f.writeConfig,
+    writeConfig: f.writeConfig, discoverTools: f.discoverTools,
     log: f.log,
     generate: () => AGENT_SK,
   });
@@ -584,7 +616,7 @@ test("FIX-181: the wizard's blocked path says nothing about continuing, and writ
     channel: CHANNEL,
     makeCli: wire.makeCli,
     queryEvents: wire.queryEvents,
-    writeConfig: f.writeConfig,
+    writeConfig: f.writeConfig, discoverTools: f.discoverTools,
     log: f.log,
     generate: () => AGENT_SK,
   });
@@ -611,7 +643,7 @@ test("FIX-181: a free name still completes the wizard", async () => {
     channel: CHANNEL,
     makeCli: wire.makeCli,
     queryEvents: wire.queryEvents,
-    writeConfig: f.writeConfig,
+    writeConfig: f.writeConfig, discoverTools: f.discoverTools,
     log: f.log,
     generate: () => AGENT_SK,
   });

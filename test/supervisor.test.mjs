@@ -518,3 +518,42 @@ test("a config whose keys all resolve is not blocked by the pre-flight", async (
   await sup.start();
   assert.equal(spawned.length, 1);
 });
+
+
+// --- F-039: nothing is spawned without an adapter to spawn it through -------
+//
+// `--agent-args` was `this.#config.tools.adapter` read raw. On a fresh machine
+// that key does not exist — `setup` wrote no `tools` block at all — so `null`
+// reached child_process as an ARGUMENT and the operator got
+// `ERR_INVALID_ARG_TYPE`: a raw TypeError, from a config the schema had just
+// called valid, naming nothing that could be done about it.
+//
+// The refusal has to come BEFORE the spawn, or the message an operator sees is
+// still the one the OS produced rather than the one hive402 wrote.
+
+test("start refuses with the install command rather than handing child_process a null", async () => {
+  const { sup, spawned } = harness({
+    cfg: config({ tools: { ...config().tools, adapter: null } }),
+  });
+  await assert.rejects(
+    () => sup.start(),
+    (err) => {
+      assert.ok(
+        err.message.includes("npm install -g @agentclientprotocol/claude-agent-acp"),
+        `the remedy has to be in the message:
+${err.message}`,
+      );
+      assert.equal(err.message.includes("ERR_INVALID_ARG_TYPE"), false, err.message);
+      return true;
+    },
+  );
+  assert.deepEqual(spawned, [], "and it refused BEFORE anything was spawned");
+});
+
+test("with an adapter it launches exactly as it always did", async () => {
+  // The control. A refusal that also fires on the working case is not a fix.
+  const { sup, spawned } = harness();
+  await sup.start();
+  assert.equal(spawned.length, 1);
+  assert.equal(spawned[0].args[spawned[0].args.indexOf("--agent-args") + 1], config().tools.adapter);
+});

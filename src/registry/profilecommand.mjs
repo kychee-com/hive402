@@ -13,66 +13,21 @@
 // join record when there is no config, which is also the only source that
 // could be right at that moment.
 
-import { existsSync } from "node:fs";
-import path from "node:path";
-
 import { publishNodeProfile } from "./profile.mjs";
 import { readJoinRecord, rememberDisplayName } from "./joinrecord.mjs";
+import { buzzBinPath } from "../tools/resolve.mjs";
 
 // Where is buzz?
 //
-// FOUND BY BARRY RUNNING `hive402 join` (2026-08-26). This used to return a
-// bare `buzz.exe` when no directory was configured, on the assumption that
-// `execFile` would find it on PATH. Buzz does not put itself on PATH: on
-// Windows it installs to `%LOCALAPPDATA%\Buzz`. So the join claimed the invite,
-// recorded the policy acceptance, asked for a display name — and then:
+// The discovery this module used to own now lives in `src/tools/resolve.mjs`
+// (F-039). Its header comment records why it exists: it was written after a
+// bare-name assumption broke `join` on a machine where Buzz was installed and
+// working. Three LATER call sites hardcoded the Windows name anyway, for
+// `buzz-acp` and the ACP adapter, which is what moved it out of here and put a
+// structural guard around it.
 //
-//     ! joined, but the name could not be published: buzz users set-profile:
-//       exit ENOENT
-//
-// on a machine with Buzz installed and working. `join` is the FIRST command
-// anyone runs and it is the one command with no config to read `tools.buzzDir`
-// from, so the bare-name assumption failed exactly where it hurt most.
-//
-// Order: what the config says, then where Buzz actually installs itself, then
-// the bare name so PATH still wins for anyone who has arranged it.
-const KNOWN_DIRS = {
-  win32: (env) => [
-    env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Buzz"),
-    env.PROGRAMFILES && path.join(env.PROGRAMFILES, "Buzz"),
-    env.APPDATA && path.join(env.APPDATA, "Buzz"),
-  ],
-  darwin: (env) => [
-    "/Applications/Buzz.app/Contents/MacOS",
-    env.HOME && path.join(env.HOME, ".local", "bin"),
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-  ],
-  linux: (env) => [
-    env.HOME && path.join(env.HOME, ".local", "bin"),
-    "/usr/local/bin",
-    "/usr/bin",
-    "/opt/buzz",
-  ],
-};
-
-export function buzzBinPath(
-  buzzDir = null,
-  { exists = existsSync, platform = process.platform, env = process.env } = {},
-) {
-  const name = platform === "win32" ? "buzz.exe" : "buzz";
-  // An explicit directory is the operator's answer and is not second-guessed:
-  // if they named a directory and the binary is not in it, the error should say
-  // that rather than silently using a different Buzz.
-  if (buzzDir) return path.join(buzzDir, name);
-
-  for (const dir of (KNOWN_DIRS[platform] ?? KNOWN_DIRS.linux)(env)) {
-    if (!dir) continue;
-    const candidate = path.join(dir, name);
-    if (exists(candidate)) return candidate;
-  }
-  return name; // let PATH have the last word
-}
+// Re-exported so this module's five callers change in zero ways.
+export { buzzBinPath };
 
 // The relay this node belongs to, and the binary that talks to it.
 export function resolveRelay({ config = null, stateDir }) {

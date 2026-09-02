@@ -35,6 +35,7 @@ import { makeRun402Cli } from "../workshop/cli.mjs";
 import { writeWorkshopGuide } from "../workshop/guide.mjs";
 import { DEPLOY_DIR, deployDirIn } from "../workshop/site.mjs";
 import { trustWorkspace } from "../launcher/workspace.mjs";
+import { buzzAcpPath, describeMissingTool } from "../tools/resolve.mjs";
 import { IdentityPublisher } from "../identity/publisher.mjs";
 import { cliRelayUrl } from "../relay/buzzcli.mjs";
 import { KIND_MANAGED_AGENT, publishManagedAgent } from "../identity/managedagent.mjs";
@@ -94,7 +95,12 @@ const TURNGATE = fileURLToPath(new URL("../runtime/turngate.mjs", import.meta.ur
 export class Supervisor {
   #config;
   #configDir;
+  #configFile;
   #stateDir;
+  // The two tool paths a harness spawn needs, resolved ONCE rather than joined
+  // inline at the spawn call — which is where F-039 lived (see below).
+  #harnessPath;
+  #adapterPath;
   #spawn;
   #makeCli;
   #resolveKey;
@@ -152,6 +158,24 @@ export class Supervisor {
     // owner writes a path next to the config they are editing, and `hive402 up`
     // may be run from anywhere.
     configDir = null,
+    // The config FILE, so a refusal can name the file to edit rather than a
+    // directory. Optional: a test that builds a Supervisor by hand has none.
+    configFile = null,
+    // Where buzz-acp and the ACP adapter actually are (F-039).
+    //
+    // These used to be computed AT the spawn call as
+    // `path.join(tools.buzzDir ?? "", "buzz-acp.exe")` and a verbatim
+    // `tools.adapter`. On a fresh machine `buzzDir` is null — `setup` writes no
+    // `tools` key and the schema normalises the absence to nulls — so the join
+    // produced a bare RELATIVE "buzz-acp.exe" (spawn ENOENT) and the adapter
+    // reached child_process as `null` (ERR_INVALID_ARG_TYPE, a raw TypeError).
+    // The `.exe` was wrong on macOS and Linux under any configuration at all.
+    //
+    // `makeSupervisor` resolves both through `src/tools/resolve.mjs` and
+    // refuses BEFORE constructing when either is missing. Defaulted here from
+    // the config so a directly-constructed Supervisor behaves as it always did.
+    harnessPath = null,
+    adapterPath = null,
     stateDir,
     spawn,
     makeCli,
@@ -203,6 +227,9 @@ export class Supervisor {
     this.#identify = identify ?? null;
     this.#config = config;
     this.#configDir = configDir ?? process.cwd();
+    this.#configFile = configFile;
+    this.#harnessPath = harnessPath ?? buzzAcpPath(config?.tools?.buzzDir ?? null);
+    this.#adapterPath = adapterPath ?? config?.tools?.adapter ?? null;
     this.#stateDir = stateDir;
     this.#spawn = spawn;
     this.#makeCli = makeCli;
@@ -367,8 +394,26 @@ export class Supervisor {
     );
   }
 
+  // Nothing here launches an agent without an adapter to launch it through.
+  //
+  // `makeSupervisor` already refuses, with the full remedy, before this object
+  // exists — this is the invariant that makes defect 2 unable to recur by any
+  // other route, and it carries the same install command so it can never
+  // degrade back into a bare ERR_INVALID_ARG_TYPE from child_process.
+  #preflightTools() {
+    if (this.#adapterPath) return;
+    throw new Error(
+      "cannot start: " +
+        describeMissingTool(
+          { tool: "adapter", path: null, source: "none", searched: [] },
+          { configFile: this.#configFile },
+        ),
+    );
+  }
+
   async start() {
     mkdirSync(this.#stateDir, { recursive: true });
+    this.#preflightTools();
     await this.#preflightKeys();
 
     const previous = this.#readPidFile();
@@ -870,7 +915,7 @@ export class Supervisor {
     const logFd = openSync(logFile, "a");
 
     const child = this.#spawn(
-      path.join(this.#config.tools.buzzDir ?? "", "buzz-acp.exe"),
+      this.#harnessPath,
       [
         // Every channel this agent belongs to, in ONE process. `--channels`
         // takes a comma-delimited list (buzz-acp config.rs, `value_delimiter =
@@ -878,7 +923,7 @@ export class Supervisor {
         // would answer every message twice.
         "--channels", (channels?.length ? channels : [room.channel]).join(","),
         "--agent-command", "node",
-        "--agent-args", this.#config.tools.adapter,
+        "--agent-args", this.#adapterPath,
         // AC-41/AC-42 as explicit FLAGS as well as env (DD-18). The harness's
         // own startup line prints 21 settings and none of these three, so env
         // alone leaves the policy unverifiable from outside the process — which
