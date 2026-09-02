@@ -11,7 +11,7 @@ import path from "node:path";
 import { schnorr } from "@noble/curves/secp256k1.js";
 
 import { Supervisor } from "./supervisor.mjs";
-import { assertToolsPresent, buzzBinPath, resolveTools } from "../tools/resolve.mjs";
+import { agentPathDirs, assertToolsPresent, buzzBinPath, resolveTools } from "../tools/resolve.mjs";
 import { PACKAGE_VERSION } from "../version.mjs";
 import { classifyRecorded, makeIdentifier } from "./liveness.mjs";
 import { agentStateFromVerdict, readAgentLog } from "./respawn.mjs";
@@ -204,6 +204,7 @@ export function makeSupervisor({
     configFile,
     harnessPath: tools.harness.path,
     adapterPath: tools.adapter.path,
+    toolPaths: agentPathDirs(tools, config),
     // An `instructionsFile` is written relative to the config that names it.
     configDir: configFile ? path.dirname(path.resolve(configFile)) : null,
     stateDir,

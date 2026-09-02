@@ -45,11 +45,13 @@ import path from "node:path";
 import {
   ADAPTER_PACKAGE,
   adapterPath,
+  agentPathDirs,
   assertToolsPresent,
   buzzAcpPath,
   buzzBinPath,
   describeMissingTool,
   locateAdapter,
+  locateNodeDir,
   locateTool,
   resolveTools,
   summariseMissingTool,
@@ -517,4 +519,70 @@ test("doctor and up both go through the one resolver", () => {
   // The old shape, gone: an accurate report that named no remedy.
   assert.equal(doctor.includes("tools.buzzDir not set"), false);
   assert.equal(doctor.includes("tools.adapter not set"), false);
+});
+
+// ── The agent's PATH is CURATED, so Node has to be resolved too ───────────
+//
+// FOUND BY THE LIVE CELL, not by this file, and that is the point of having
+// one. Phase 45 deliberately excluded `tools.nodeDir` on the premise that
+// "`--agent-command` is the bare `node`, which works because Node is on PATH by
+// construction". The premise is false: `buildAgentEnv` BUILDS the child's PATH
+// from `tools.buzzDir`, `tools.nodeDir` and `tools.extraDirs` and nothing else,
+// on purpose, so an agent cannot reach a tool nobody granted it.
+//
+// With no `tools` block all three were empty, so the agent's PATH was the empty
+// string. The node came up, the harness connected, the room showed the agent
+// online, and every turn died with:
+//
+//     ERROR buzz_acp: agent failed to spawn: IO error: program not found
+//
+// A launch that produces a mute agent is not a launch. AC-1 says the node
+// launches an agent; this is the second half of making that true on a machine
+// nobody hand-configured.
+
+test("with no tools block, Node is still on the agent's PATH", () => {
+  const located = locateNodeDir(null, { execPath: "/usr/local/bin/node" });
+  assert.equal(located.path, path.dirname("/usr/local/bin/node"));
+  assert.equal(located.source, "self", "the interpreter running hive402 IS the one the agent should use");
+  assert.equal(located.exists, true);
+});
+
+test("a configured nodeDir is still the operator's answer", () => {
+  const located = locateNodeDir("/opt/node/bin", { execPath: "/usr/local/bin/node" });
+  assert.equal(located.path, "/opt/node/bin");
+  assert.equal(located.source, "configured");
+});
+
+test("the agent's PATH is never empty on a fresh machine", () => {
+  // The literal failure: every entry null, so `pathDirs.join(sep)` was "".
+  const installDir = path.join("/usr/local/bin");
+  const entry = path.join("/usr/local/lib/node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js");
+  const present = new Set([path.join(installDir, "buzz"), path.join(installDir, "buzz-acp"), entry]);
+  const tools = resolveTools(UNSET, {
+    platform: "linux",
+    env: {},
+    exists: (p) => present.has(p),
+    npmRoot: "/usr/local/lib/node_modules",
+    moduleUrl: "file:///checkout/src/tools/resolve.mjs",
+  });
+
+  const dirs = agentPathDirs(tools, UNSET);
+  assert.equal(dirs.buzzDir, installDir, "so the agent can run `buzz messages send` and not be mute");
+  assert.equal(dirs.nodeDir, path.dirname(process.execPath), "so the harness can find node to run the adapter");
+  assert.deepEqual(dirs.extraDirs, []);
+
+  const joined = [dirs.buzzDir, dirs.nodeDir, ...dirs.extraDirs].filter((d) => typeof d === "string" && d.length > 0);
+  assert.equal(joined.length, 2, "an empty PATH is a mute agent");
+});
+
+test("a configured buzzDir is what the agent's PATH carries, unmodified", () => {
+  const tools = resolveTools(
+    { tools: { buzzDir: "/opt/buzz", adapter: "/opt/acp/index.js", nodeDir: null, extraDirs: ["/x"] } },
+    { platform: "linux", env: {}, exists: NOTHING, npmRoot: null, moduleUrl: "file:///checkout/src/tools/resolve.mjs" },
+  );
+  const dirs = agentPathDirs(tools, {
+    tools: { buzzDir: "/opt/buzz", adapter: "/opt/acp/index.js", nodeDir: null, extraDirs: ["/x"] },
+  });
+  assert.equal(dirs.buzzDir, "/opt/buzz", "byte for byte, same doctrine as everywhere else");
+  assert.deepEqual(dirs.extraDirs, ["/x"], "and the granted extras are carried through untouched");
 });

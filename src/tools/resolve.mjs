@@ -158,6 +158,10 @@ export function locateTool(
   const searched = [];
   for (const known of dirsFor(KNOWN_DIRS, platform, env)) {
     const candidate = path.join(known, name);
+    // Two of the known directories can resolve to the same place (on a box
+    // where %LOCALAPPDATA% and %APPDATA% agree, say). Listing it twice in the
+    // refusal reads as a bug in the refusal.
+    if (searched.includes(candidate)) continue;
     searched.push(candidate);
     if (exists(candidate)) return { tool: binary, path: candidate, configured: null, source: "known", exists: true, searched };
   }
@@ -274,13 +278,44 @@ export function adapterPath(configured = null, opts = {}) {
   return locateAdapter(configured, opts).path;
 }
 
+// Where Node is, for the AGENT's environment.
+//
+// FOUND BY THE LIVE CELL (FIX-190, 2026-09-02), and it is the half Phase 45
+// deliberately excluded on a premise that turned out to be false. That note
+// said `nodeDir` needed no discovery because "`--agent-command` is the bare
+// `node`, which works because Node is on PATH by construction".
+//
+// It is not. `buildAgentEnv` CURATES the child's PATH — it is built from
+// `tools.buzzDir`, `tools.nodeDir` and `tools.extraDirs` and nothing else, on
+// purpose, so an agent cannot reach a tool nobody granted it. With no `tools`
+// block all three are empty, so the agent's PATH is the empty string and the
+// harness reports:
+//
+//     ERROR buzz_acp: agent failed to spawn: IO error: program not found
+//
+// The node comes up, the harness connects, the room shows the agent online,
+// and every turn dies. Node being on the OPERATOR's PATH says nothing about
+// the agent's.
+//
+// No heuristic is needed: hive402 IS a Node program, so the interpreter
+// running this line is the one the agent should use. `process.execPath` is
+// exact, and a configured `tools.nodeDir` still wins under doctrine 1.
+export function locateNodeDir(configured = null, { execPath = process.execPath } = {}) {
+  if (configured) {
+    return { tool: "node", path: configured, configured, source: "configured", exists: true, searched: [configured] };
+  }
+  const dir = path.dirname(execPath);
+  return { tool: "node", path: dir, configured: null, source: "self", exists: true, searched: [dir] };
+}
+
 // The three paths a launch needs, from one config, in one call.
 export function resolveTools(config, opts = {}) {
   const buzzDir = config?.tools?.buzzDir ?? null;
   const buzz = locateTool("buzz", buzzDir, opts);
   const harness = locateTool("buzz-acp", buzzDir, opts);
   const adapter = locateAdapter(config?.tools?.adapter ?? null, opts);
-  return { buzz, harness, adapter, missing: [buzz, harness, adapter].filter((t) => !t.exists) };
+  const node = locateNodeDir(config?.tools?.nodeDir ?? null, opts);
+  return { buzz, harness, adapter, node, missing: [buzz, harness, adapter].filter((t) => !t.exists) };
 }
 
 const WHAT_IT_IS = {
@@ -321,6 +356,19 @@ export function describeMissingTool(entry, { configFile = null } = {}) {
     `    (and on PATH)\n` +
     `  Install Buzz, or set ${key} in ${where} to the directory that holds ${entry.tool}.`
   );
+}
+
+// The directories an agent's curated PATH is built from, resolved rather than
+// read raw — so a config with no `tools` block produces a PATH that can
+// actually run the tools the agent is granted.
+export function agentPathDirs(tools, config = null) {
+  const buzzDir =
+    tools.buzz.configured ?? (tools.buzz.exists && tools.buzz.path ? path.dirname(tools.buzz.path) : null);
+  return {
+    buzzDir,
+    nodeDir: tools.node.path,
+    extraDirs: config?.tools?.extraDirs ?? [],
+  };
 }
 
 // The one-line form, for a report that prints one line per step.

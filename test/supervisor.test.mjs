@@ -557,3 +557,18 @@ test("with an adapter it launches exactly as it always did", async () => {
   assert.equal(spawned.length, 1);
   assert.equal(spawned[0].args[spawned[0].args.indexOf("--agent-args") + 1], config().tools.adapter);
 });
+
+test("an agent launched from a tools-less config still gets a usable PATH", async () => {
+  // The live cell's finding, pinned. A curated PATH built from three nulls is
+  // the empty string, and the harness then cannot find `node` to run the
+  // adapter with: the room shows the agent online and every turn dies.
+  const bare = config({ tools: { buzzDir: null, nodeDir: null, adapter: "/adapter.js", extraDirs: [] } });
+  const { sup, spawned } = harness({ cfg: bare });
+  await sup.start();
+  const env = spawned[0].opts.env;
+  assert.notEqual(env.PATH, "", "an empty PATH is a mute agent");
+  assert.ok(
+    env.PATH.split(process.platform === "win32" ? ";" : ":").filter(Boolean).length > 0,
+    `the agent got PATH=${JSON.stringify(env.PATH)}`,
+  );
+});

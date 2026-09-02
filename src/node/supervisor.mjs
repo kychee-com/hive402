@@ -35,7 +35,7 @@ import { makeRun402Cli } from "../workshop/cli.mjs";
 import { writeWorkshopGuide } from "../workshop/guide.mjs";
 import { DEPLOY_DIR, deployDirIn } from "../workshop/site.mjs";
 import { trustWorkspace } from "../launcher/workspace.mjs";
-import { buzzAcpPath, describeMissingTool } from "../tools/resolve.mjs";
+import { buzzAcpPath, describeMissingTool, locateNodeDir } from "../tools/resolve.mjs";
 import { IdentityPublisher } from "../identity/publisher.mjs";
 import { cliRelayUrl } from "../relay/buzzcli.mjs";
 import { KIND_MANAGED_AGENT, publishManagedAgent } from "../identity/managedagent.mjs";
@@ -101,6 +101,7 @@ export class Supervisor {
   // inline at the spawn call — which is where F-039 lived (see below).
   #harnessPath;
   #adapterPath;
+  #toolPaths;
   #spawn;
   #makeCli;
   #resolveKey;
@@ -176,6 +177,10 @@ export class Supervisor {
     // the config so a directly-constructed Supervisor behaves as it always did.
     harnessPath = null,
     adapterPath = null,
+    // The directories the AGENT's curated PATH is built from. Resolved by
+    // `makeSupervisor`; defaulted from the config so a directly-constructed
+    // Supervisor behaves exactly as it always did.
+    toolPaths = null,
     stateDir,
     spawn,
     makeCli,
@@ -228,6 +233,15 @@ export class Supervisor {
     this.#config = config;
     this.#configDir = configDir ?? process.cwd();
     this.#configFile = configFile;
+    // `nodeDir` falls back to the interpreter running THIS process even when a
+    // caller builds a Supervisor by hand. The invariant belongs to the thing
+    // that launches: an agent whose curated PATH cannot reach `node` is an
+    // agent the harness can never start, and nothing downstream can recover it.
+    this.#toolPaths = toolPaths ?? {
+      buzzDir: config?.tools?.buzzDir ?? null,
+      nodeDir: locateNodeDir(config?.tools?.nodeDir ?? null).path,
+      extraDirs: config?.tools?.extraDirs ?? [],
+    };
     this.#harnessPath = harnessPath ?? buzzAcpPath(config?.tools?.buzzDir ?? null);
     this.#adapterPath = adapterPath ?? config?.tools?.adapter ?? null;
     this.#stateDir = stateDir;
@@ -893,11 +907,10 @@ export class Supervisor {
       // agent rewrite this?" guard asks about the same file that was read.
       instructionsPath: instructionsFilePath({ agent, configDir: this.#configDir }),
       workDir,
-      toolPaths: {
-        buzzDir: this.#config.tools.buzzDir,
-        nodeDir: this.#config.tools.nodeDir,
-        extraDirs: this.#config.tools.extraDirs,
-      },
+      // Resolved, not read raw: with no `tools` block these were all null and
+      // the agent's curated PATH came out empty, so the harness could not find
+      // `node` to run the adapter with (FIX-190's live cell).
+      toolPaths: this.#toolPaths,
     });
 
     // Capture the harness's output per agent. Two reasons: an operator needs
