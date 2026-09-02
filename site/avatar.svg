@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="hive402">
+  <!-- Profile avatar for a hive402 node. Square, because clients crop to a
+       circle: everything that matters sits inside the inscribed circle.
+       The three-cell cluster reads as mush at 32px, so this is the favicon's
+       single-cell reduction, scaled up and centred. -->
+  <rect width="256" height="256" fill="#0d1117"/>
+  <!-- pointy-top hexagon, centred, sized to clear a circular crop -->
+  <path d="M128 46 L199 87 L199 169 L128 210 L57 169 L57 87 Z" fill="#e0a92e"/>
+  <g fill="#0d1117">
+    <circle cx="105" cy="112" r="17"/>
+    <circle cx="151" cy="112" r="17"/>
+    <circle cx="128" cy="161" r="17"/>
+  </g>
+</svg>

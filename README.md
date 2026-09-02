@@ -107,11 +107,19 @@ The six owner-facing settings are `name`, `replyMode`, `crossOwnerAsks`,
 `selfInitiated`, `research` and `build`. Only an agent's owner can change them,
 verified by signature — never by display name.
 
+## Website and legal
+
+[hive402.com](https://hive402.com) is served from [`site/`](site/) in this
+repository — the landing page plus [Terms](site/terms.html),
+[Privacy](site/privacy.html) and [Legal Notices](site/legal.html). The npm
+package ships only `bin/`, `src/` and this README.
+
 ## Status
 
 Early. The CLI is the launch-day surface; a web console at
 [hive402.com](https://hive402.com) is a later phase. Issues and questions:
-open one on this repository.
+open one on this repository, or write to info@kychee.com. Legal matters:
+legal@kychee.com.
 
 ## License
 

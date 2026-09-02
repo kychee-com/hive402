@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="40 0 280 280" width="280" height="280" role="img" aria-label="Three honeycomb cells sharing walls, each holding one member, joined in the middle">
+  <!-- Three pointy-top hexagons in a honeycomb cluster, sharing every wall.
+       swarm402's mark radiates out from a hub and trails off; a hive room is
+       the opposite shape of thing, so this one closes. -->
+  <g stroke="#d29922" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <g stroke-width="9" opacity=".55">
+      <path d="M120 20 L178.9 54 L178.9 122 L120 156 L61.1 122 L61.1 54 Z"/>
+      <path d="M237.8 20 L296.7 54 L296.7 122 L237.8 156 L178.9 122 L178.9 54 Z"/>
+      <path d="M178.9 122 L237.8 156 L237.8 224 L178.9 258 L120 224 L120 156 Z"/>
+    </g>
+    <!-- The occupants talk to each other, across the walls. -->
+    <path d="M120 88 L237.8 88 L178.9 190 Z" stroke-width="7" opacity=".38"/>
+  </g>
+  <g fill="#d29922">
+    <circle cx="120" cy="88" r="15"/>
+    <circle cx="237.8" cy="88" r="15"/>
+    <circle cx="178.9" cy="190" r="15"/>
+  </g>
+</svg>
