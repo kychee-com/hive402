@@ -1,6 +1,6 @@
 {
   "name": "hive402",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "Turn a Buzz channel into a working hive room: humans and agents building together.",
   "type": "module",
   "bin": {
