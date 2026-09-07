@@ -825,8 +825,10 @@ export class Supervisor {
       });
     } catch (err) {
       this.#log(
-        `hive402: ${agent.name} will not appear in a client's @ picker (${err.message}) — ` +
-          `it can still be addressed by typing the name in full`,
+        `hive402: ${agent.name} has no managed-agent record this node can publish (${err.message}) — ` +
+          `it can still be addressed by typing the name in full, but it will not appear in a client's @ picker ` +
+          `and other nodes cannot cover for ${agent.name} while it is offline (AC-61). ` +
+          `Run: hive402 register --agent ${agent.name}`,
       );
     }
 

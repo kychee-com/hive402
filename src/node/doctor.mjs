@@ -238,3 +238,95 @@ export function buildPinCheck({ pin = null, fingerprints = {} }) {
   }
   return { state: ok ? "pinned" : "drift", version: pin.version ?? null, results };
 }
+
+// F-041 / DD-75 — can any other node cover for this agent?
+//
+// A covering node acts only on agents whose kind-30177 managed-agent record is
+// AUTHORED by their hosting node (foreign.mjs, DD-51): that author is where
+// "is its node offline?" is read from. An agent with no such record — never
+// registered here, tombstoned, attested by some other key from before the node
+// had its own identity, or contested between two authors — can never draw an
+// AC-61 notice or an AC-63 replay while its node is down. `up` tries to
+// publish the record on every launch and is (correctly) refused for an agent
+// attested elsewhere; it logs that. This is the check that turns the refusal
+// into something an operator sees, with the consequence and the fix named
+// (AC-57). Pure: rows in, verdict out.
+export function registryRecordCheck({ rows, agentName, agentPubkey, nodePubkey, attestedBy = null }) {
+  const lc = (v) => String(v ?? "").toLowerCase();
+  const agent = lc(agentPubkey);
+  const node = lc(nodePubkey);
+  // Who signed the LOCAL attestation, when the caller could verify it. It
+  // splits "absent" into the two things an operator can actually do: a record
+  // attested here is published by the next `up` (or `register` again); one
+  // attested by some other key can only be fixed by re-registering.
+  const attester = lc(attestedBy) || null;
+  const authors = new Set();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (row?.kind !== 30177) continue;
+    const d = (Array.isArray(row.tags) ? row.tags : []).find((t) => Array.isArray(t) && t[0] === "d")?.[1];
+    if (lc(d) !== agent) continue;
+    let name = null;
+    try { name = JSON.parse(row.content ?? "")?.name ?? null; } catch { continue; }
+    if (typeof name !== "string" || name === "") continue; // a tombstone is not a record
+    authors.add(lc(row.pubkey));
+  }
+  const fix = `hive402 register --agent ${agentName} (so this node attests it)`;
+  const consequence = `other nodes cannot cover for ${agentName} while it is offline (AC-61/AC-63)`;
+  if (authors.size === 0) {
+    if (attester && attester === node) {
+      return {
+        state: "absent",
+        ok: false,
+        detail: `attested by this node, but no managed-agent record on the relay yet — ${consequence}. Run: hive402 up (it publishes the record on launch), or ${fix}`,
+      };
+    }
+    if (attester) {
+      return {
+        state: "absent",
+        ok: false,
+        detail: `no managed-agent record on the relay, and the local attestation is by ${attester.slice(0, 12)}…, not this node — ${consequence}. Re-register so this node attests it: ${fix}`,
+      };
+    }
+    return { state: "absent", ok: false, detail: `no managed-agent record on the relay — ${consequence}. Run: ${fix}` };
+  }
+  if (authors.size > 1) {
+    return {
+      state: "contested",
+      ok: false,
+      detail: `two authors claim this agent's record (${[...authors].map((a) => a.slice(0, 12) + "…").join(", ")}) — a peer drops a contested agent whole, so ${consequence}. Run: ${fix}, and retire the stale record`,
+    };
+  }
+  const [author] = [...authors];
+  if (author !== node) {
+    return {
+      state: "attested-elsewhere",
+      ok: false,
+      detail: `the record is authored by ${author.slice(0, 12)}…, not this node — ${consequence}. Re-register so this node attests it: ${fix}`,
+    };
+  }
+  return { state: "ok", ok: true, detail: "managed-agent record on the relay is authored by this node — peers can cover for it" };
+}
+
+// The doctor lines for every hosted agent, from ONE registry read. A read that
+// failed is reported as exactly that — a warning, no per-agent verdict — the
+// same doctrine as the cover path's null presence (DD-52): an unreadable relay
+// is not evidence either way, and a FAIL it did not earn would send an
+// operator re-registering agents that are fine.
+export function registryRecordReport({ rows = null, error = null, agents = [], nodePubkey }) {
+  if (error) {
+    const why = error?.message ?? String(error);
+    return {
+      lines: [],
+      warn: `registry record: could not check (${why}) — until it is checked, assume no other node can cover for these agents`,
+    };
+  }
+  return {
+    warn: null,
+    lines: agents.map((agent) => {
+      const check = registryRecordCheck({
+        rows, agentName: agent.name, agentPubkey: agent.pubkey, nodePubkey, attestedBy: agent.attestedBy ?? null,
+      });
+      return { ok: check.ok, state: check.state, text: `registry record for ${agent.name}: ${check.detail}` };
+    }),
+  };
+}

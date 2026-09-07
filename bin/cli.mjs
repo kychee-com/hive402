@@ -906,7 +906,12 @@ async function cmdRegister({ flags }) {
   // agent needs nothing secret from a person. The flags remain for a dev relay
   // that signs with an `env:` reference.
   const { registerAgent } = await import("../src/node/runtime.mjs");
+  const { publishManagedAgent } = await import("../src/identity/managedagent.mjs");
   const result = await registerAgent({
+    // F-041 / DD-75: the record a PEER reads to cover for this agent (AC-61)
+    // is published here, at registration, not only at the next `up`. Passed
+    // in so the library never reaches the network on its own.
+    publishRecord: publishManagedAgent,
     config,
     configFile: file,
     raw,
@@ -929,6 +934,16 @@ async function cmdRegister({ flags }) {
   // The name is only reserved once it is published — that is what another
   // owner's node checks against (AC-37).
   console.log(`  name claim:  ${result.published ? "published — the name is now taken in this room" : "NOT PUBLISHED"}`);
+  // F-041 / DD-75. Without this record no other node can tell that this
+  // agent's node is offline, so none can cover for it (AC-61, AC-63).
+  console.log(
+    `  cover record: ${
+      result.recordPublished
+        ? `published — other nodes can cover for ${result.name} while it is offline`
+        : "NOT PUBLISHED"
+    }`,
+  );
+  if (result.recordWarning) console.log(`  ! ${result.recordWarning}`);
   for (const warning of result.nameWarnings ?? []) console.log(`  ! ${warning}`);
   if (result.warning) console.log(`  ! ${result.warning}`);
 }
@@ -1228,6 +1243,53 @@ async function cmdDoctor({ flags }) {
     for (const agent of room.agents) {
       const att = path.join(stateDir, "agents", `${agent.name}.json`);
       say(existsSync(att), `attestation for ${agent.name}: ${att}`);
+    }
+  }
+
+  // F-041 / DD-75: can any OTHER node cover for each hosted agent? That needs
+  // a managed-agent record on the relay authored by THIS node. Read live,
+  // signed as the node, like the supervisor's own registry read. Unreadable is
+  // "could not check", never ok and never a false FAIL.
+  {
+    const { registryRecordReport } = await import("../src/node/doctor.mjs");
+    const { queryEvents } = await import("../src/relay/query.mjs");
+    const { nip98Header } = await import("../src/identity/nip98.mjs");
+    const { cliRelayUrl } = await import("../src/relay/buzzcli.mjs");
+    const { makeKeyResolver } = await import("../src/node/runtime.mjs");
+    const { CredentialStore } = await import("../src/credentials/store.mjs");
+    const { KIND_MANAGED_AGENT } = await import("../src/identity/managedagent.mjs");
+    const { verifyAuthTag } = await import("../src/identity/nipoa.mjs");
+    // Who signed each local attestation — read off the file, verified, never
+    // trusted from a field. Missing or malformed is simply "unknown".
+    const attestedBy = (agent) => {
+      try {
+        const record = JSON.parse(readFileSync(path.join(stateDir, "agents", `${agent.name}.json`), "utf8"));
+        return verifyAuthTag({ tag: record?.authTag, agentPubkey: agent.pubkey });
+      } catch {
+        return null;
+      }
+    };
+    const hosted = config.rooms.flatMap((r) => r.agents).map((a) => ({ ...a, attestedBy: attestedBy(a) }));
+    if (hosted.length) {
+      let rows = null;
+      let error = null;
+      try {
+        const resolveKey = makeKeyResolver({ store: new CredentialStore(), nodePubkey: config.node.pubkey });
+        rows = await queryEvents({
+          origin: cliRelayUrl(config.relayUrl),
+          // The same read the supervisor's cover path does (#refreshForeign):
+          // every managed-agent record, filtered here. Proven against the live
+          // relay; a #d filter is not.
+          filters: [{ kinds: [KIND_MANAGED_AGENT] }],
+          privateKeyHex: await resolveKey(config.node.privateKeyRef, { role: "node" }),
+          nip98: nip98Header,
+        });
+      } catch (err) {
+        error = err;
+      }
+      const report = registryRecordReport({ rows, error, agents: hosted, nodePubkey: config.node.pubkey });
+      if (report.warn) console.log(`warn  ${report.warn}`);
+      for (const line of report.lines) say(line.ok, line.text);
     }
   }
 

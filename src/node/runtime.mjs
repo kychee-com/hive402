@@ -35,6 +35,7 @@ import { markRetired } from "../config/load.mjs";
 import { resolveModel } from "../config/schema.mjs";
 import { checkAgentName, describeNameFindings } from "../registry/namecheck.mjs";
 import { IdentityPublisher } from "../identity/publisher.mjs";
+import { nip98Header } from "../identity/nip98.mjs";
 
 const HEX64 = /^[0-9a-f]{64}$/i;
 
@@ -393,6 +394,11 @@ export async function registerAgent({
   // so the ladder is testable without a relay. Real callers pass nothing and
   // `checkAgentName` uses the real `/query`.
   queryEvents = undefined,
+  // F-041 / DD-75: the kind-30177 record a PEER reads to cover for this agent.
+  // Injected by the CLI (`publishManagedAgent`); null means "do not publish",
+  // which is what every library caller and test gets — this function must
+  // never reach a relay nobody handed it.
+  publishRecord = null,
 }) {
   const declaredNodeRef = config?.node?.privateKeyRef ?? "keychain";
   const sponsorReference = sponsorRef ?? declaredNodeRef;
@@ -448,6 +454,22 @@ export async function registerAgent({
           `(${err.message}).\n` +
           `  Add it in your Buzz client — it is a community member like any other — ` +
           `then run this again.`,
+      );
+    }
+    // Accepted is not applied. Seen live (2026-09-07, FIX-210): the rig node ran
+    // as the relay's own identity, which a relay never lists as a member of
+    // anything — `channels join` was accepted, the owner's `add-member` was
+    // accepted, and the roster did not change. Without this the operator gets
+    // validateRegistration's "must be sponsored by an existing community
+    // member" and goes off to check a community join that already succeeded.
+    if (!members.has(sponsorPubkeyForMembership)) {
+      throw new Error(
+        `this node (${sponsorPubkeyForMembership.slice(0, 12)}…) joined channel ${room.channel} — the relay accepted ` +
+          `it — and the channel roster still does not list it, so it cannot sponsor a registration: ` +
+          `registration must be sponsored by an existing community member (AC-36).\n` +
+          `  Add it from a Buzz client (it is a community member like any other), then run this again.\n` +
+          `  If this node's key is also the relay's own key, give the node an identity of its own: ` +
+          `a relay never lists itself as a member.`,
       );
     }
   }
@@ -586,6 +608,44 @@ export async function registerAgent({
       `run "hive402 up" to publish it, or the name will not resolve`;
   }
 
+  // ── The record other nodes cover from (F-041, DD-75) ─────────────────────
+  //
+  // `up` publishes this on every launch, but an operator's next step after
+  // `register` is `doctor`, and a doctor that says "no other node can cover
+  // for this agent" right after a successful registration is a false alarm
+  // with a real remedy attached. The key that signs it must be the attester's
+  // (managedagent.mjs refuses anything else) and the attester must be THIS
+  // node, or the record would name a "hosting node" that never publishes
+  // liveness — a human key on a dev relay — and peers would cover for an agent
+  // whose node is never "back". Never fatal: the agent IS registered.
+  let recordPublished = false;
+  let recordWarning = null;
+  const nodePubkeyLc = String(config?.node?.pubkey ?? "").toLowerCase();
+  if (!publishRecord) {
+    recordWarning = null; // library caller: not this function's job
+  } else if (attesterPubkey.toLowerCase() !== nodePubkeyLc) {
+    recordWarning =
+      `attested by ${attesterPubkey.slice(0, 12)}…, not this node — no managed-agent record was published, ` +
+      `so other nodes cannot cover for ${agent.name} while it is offline (AC-61). ` +
+      `Register without --owner-key so the node attests it.`;
+  } else {
+    try {
+      await publishRecord({
+        agent,
+        authTag,
+        ownerPrivateKeyHex: attesterKey,
+        origin: cliRelayUrl(config.relayUrl),
+        respondTo: "anyone",
+        nip98: nip98Header,
+      });
+      recordPublished = true;
+    } catch (err) {
+      recordWarning =
+        `registered, but publishing the managed-agent record failed (${err.message}) — ` +
+        `"hive402 up" publishes it on launch; until then other nodes cannot cover for ${agent.name} (AC-61)`;
+    }
+  }
+
   return {
     name: agent.name,
     attestationFile,
@@ -601,6 +661,8 @@ export async function registerAgent({
     published,
     warning: publishWarning,
     nameWarnings: ownerNameWarnings,
+    recordPublished,
+    recordWarning,
   };
 }
 
