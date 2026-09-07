@@ -51,12 +51,20 @@ test("the policies that need to be visible on the command line are exactly these
   // is passed as a flag anyway: it decides whether two people's requests can be
   // merged into one turn (DD-24), which makes it the one setting most worth
   // being able to check with a standard OS tool and nobody's word.
+  //
+  // `--session-policy` and `--agents` joined at the Buzz 0.5.23 pin bump
+  // (DD-74): Desktop's managed launch now sets both, so hive402 sets both
+  // explicitly, and since each carries a value it can ride the command line.
+  // relay-observer, also new, is a bare switch with no "off" spelling, so it
+  // stays env-only like presence.
   const flags = lifetimePolicyArgs().filter((a) => a.startsWith("--"));
   assert.deepEqual(flags.sort(), [
+    "--agents",
     "--exit-after-inactivity",
     "--idle-pool-sleep",
     "--lazy-pool",
     "--multiple-event-handling",
+    "--session-policy",
   ]);
 });
 
@@ -77,10 +85,25 @@ test("a command line carrying every policy passes the check", () => {
   const commandLine =
     "buzz-acp.exe --channels abc --agent-command node --agent-args x " +
     "--lazy-pool --idle-pool-sleep 900 --exit-after-inactivity 3600 " +
-    "--multiple-event-handling queue";
+    "--multiple-event-handling queue --session-policy channel --agents 1";
   const result = lifecycleCheck({ commandLine });
   assert.equal(result.ok, true, result.detail);
   assert.match(result.detail, /lazy-pool/);
+});
+
+test("a node still running a pre-0.3.8 launch fails the check and names the 0.5.23 policies", () => {
+  // The exact shape doctor meets on the day of the upgrade: the node was
+  // started by the previous build and has not been restarted since. It must
+  // read as "not confirmed", naming the policies the new build sets, not pass
+  // on the old four.
+  const commandLine =
+    "buzz-acp.exe --channels abc --agent-command node --agent-args x " +
+    "--lazy-pool --idle-pool-sleep 900 --exit-after-inactivity 3600 " +
+    "--multiple-event-handling queue";
+  const result = lifecycleCheck({ commandLine });
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /--session-policy/);
+  assert.match(result.detail, /--agents/);
 });
 
 test("a command line missing a policy fails the check and names what is missing", () => {

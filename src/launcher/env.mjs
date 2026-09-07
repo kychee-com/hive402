@@ -4,7 +4,8 @@
 // one deliberately (spec AC-38, AC-41, AC-42; issue #1).
 //
 // Env var names are verified against buzz source @ df9e773a
-// (crates/buzz-acp/src/config.rs). Values are strings — this is a process env.
+// (crates/buzz-acp/src/config.rs) and re-audited at desktop-v0.5.23
+// (b9392d9d7, 2026-09-07 — DD-74). Values are strings — this is a process env.
 
 import { readdirSync } from "node:fs";
 import { resolveModel } from "../config/schema.mjs";
@@ -54,12 +55,51 @@ const LIFETIME_POLICY = {
   // forbid. Bypassing the per-tool prompt is required for a headless agent:
   // `default` would block forever waiting for a human to click.
   BUZZ_ACP_PERMISSION_MODE: "bypass-permissions",
+  // ── Added at the Buzz Desktop 0.5.23 pin bump (DD-74, AC-42) ──────────────
+  // Desktop's local managed-agent spawn now sets these three. Each is set here
+  // explicitly so a later bump cannot flip it silently; two of them carry a
+  // value and so also ride the command line (LIFETIME_FLAGS, DD-18).
+  //
+  // Desktop turns relay-observer ON: "publish encrypted ACP observer frames
+  // over the relay" — the feed its own session viewer reads. Nobody consumes
+  // those frames for a hand-launched agent, and an encrypted transcript stream
+  // of every turn is traffic and surface the owner did not ask for. OFF, on
+  // purpose. Revisit if an owner wants to watch a hive402 agent from Desktop.
+  BUZZ_ACP_RELAY_OBSERVER: "false",
+  // One ACP session per channel: the model every validation cycle exercised.
+  // The thread-scoped session is an opt-in experiment upstream, not a default
+  // hive402 should inherit by accident.
+  BUZZ_ACP_SESSION_POLICY: "channel",
+  // One worker per agent. Parallelism is not one of an agent's six settings
+  // (AC-18) and nothing in hive402 dispatches to more than one worker.
+  BUZZ_ACP_AGENTS: "1",
 };
 
 // The audited table, exported so a test can assert the WHOLE set is present
 // rather than spot-checking the three the spec happens to name today. Re-checked
 // at every Buzz version pin (AC-42).
 export const LIFETIME_POLICY_KEYS = Object.freeze(Object.keys(LIFETIME_POLICY));
+
+// Keys Desktop's local managed-agent spawn sets that hive402 deliberately does
+// NOT set — each with its reason, in product code rather than in a document,
+// because the AC-42 structural test reads this list. "Deliberately not" is an
+// explicit decision, the opposite of an inherited default. (DD-74)
+export const NOT_MIRRORED_POLICY = Object.freeze({
+  BUZZ_ACP_REPLAY_FLOOR:
+    "Desktop passes a per-spawn floor so the harness replays a message published before it " +
+    "started. hive402 owns that case: the node puts a promised message to the agent again " +
+    "exactly once after recovery (AC-59, F-11). A harness-side replay on top would deliver it twice.",
+  BUZZ_ACP_SYSTEM_PROMPT:
+    "hive402 sets no system prompt. Who the agent is travels as team instructions with the " +
+    "owner's provenance on them (AC-55, DD-45, DD-67); the base prompt stays upstream's.",
+  BUZZ_ACP_MODEL:
+    "The model is hive402's own config decision, delivered as ANTHROPIC_MODEL (AC-74, DD-62). " +
+    "Desktop's own code strips BUZZ_ACP_MODEL for Claude launches to avoid a second startup " +
+    "authority; hive402 never introduces one.",
+  BUZZ_ACP_MCP_COMMAND:
+    "hive402 hands the agent no MCP command. Tools reach an agent through its capability-scoped " +
+    "runtime config and the tool gate (DD-11), never through a harness-level MCP entry point.",
+});
 
 // The same policy again, as CLI flags (DD-18, fix cycle 2).
 //
@@ -87,6 +127,12 @@ const LIFETIME_FLAGS = [
   // table (DD-24), and a flag makes it checkable with a standard OS tool
   // without trusting anything we wrote.
   { flag: "--multiple-event-handling", env: "BUZZ_ACP_MULTIPLE_EVENT_HANDLING" },
+  // Added at the 0.5.23 bump (DD-74). Both carry a value, so both can be read
+  // off the live process with a standard OS tool. relay-observer cannot: it
+  // is a bare on/off switch with no way to spell "off", so — like presence —
+  // it is env-only and table-verified.
+  { flag: "--session-policy", env: "BUZZ_ACP_SESSION_POLICY" },
+  { flag: "--agents", env: "BUZZ_ACP_AGENTS" },
 ];
 
 export function lifetimePolicyArgs() {
