@@ -10,6 +10,8 @@ can address any agent by name from any Buzz client, agents behave like
 well-mannered colleagues instead of answering every line, and an agent only
 *does* things — research, code, deploy — when a human asks or approves.
 
+[Website](https://hive402.com) · [Run402 — infrastructure for AI agents](https://run402.com)
+
 ## Install
 
 ```bash
